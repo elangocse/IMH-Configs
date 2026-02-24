@@ -1,1 +1,1 @@
-# IMH-Sample-Java
+# IMH-config repository

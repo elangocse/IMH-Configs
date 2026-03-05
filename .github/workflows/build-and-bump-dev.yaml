@@ -10,6 +10,7 @@ on:
       - "src/**"
       - "charts/**"
       - "envs/dev/**"
+      - ".github/workflows/build-and-bump-dev.yaml"
   workflow_dispatch:
     inputs:
       bump:
@@ -75,7 +76,7 @@ jobs:
         id: vars
         shell: bash
         run: |
-          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          REPO_NAME="imh-java"
           IMAGE_REPO="${IMAGE_REPO_PREFIX}/${REPO_NAME}"
           VERSION="${{ steps.bump.outputs.new }}"
           IMAGE_FQDN="${{ secrets.ACR_NAME }}.azurecr.io"

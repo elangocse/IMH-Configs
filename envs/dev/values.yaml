@@ -1,6 +1,6 @@
 image:
-  repository: dxctraining.azurecr.io/apps/myapp
-  tag: 0.1.0
+  repository: dxctraining.azurecr.io/apps/imh-java
+  tag: 0.1.3
 
 replicaCount: 1
 

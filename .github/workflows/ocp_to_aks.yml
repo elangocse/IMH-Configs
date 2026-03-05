@@ -1,0 +1,160 @@
+name: OCP → AKS manifest transformer (commit to repo)
+
+on:
+#  workflow_dispatch:
+#    inputs:
+#      source_dir:
+#        description: "Directory with OpenShift YAML (input)"
+#        required: true
+#        default: "openshift"
+#      out_dir:
+#        description: "Directory to write AKS manifests (output)"
+#        required: true
+#        default: "dist/aks/base"
+#      default_domain:
+#        description: "Default domain for Routes without host"
+#        required: true
+#        default: "apps.example.com"
+#      ingress_class:
+#        description: "Ingress class (nginx or azure/application-gateway)"
+#        required: true
+#        default: "nginx"
+#      tls_secret_name:
+#        description: "TLS secret name for Ingress (optional)"
+#        required: false
+#        default: ""
+#      image_registry:
+#        description: "Target registry override (e.g., myacr.azurecr.io). Leave blank to use ACR_NAME secret if present."
+#        required: false
+#        default: ""
+#      repo_prefix:
+#        description: "Optional repo prefix in target registry (e.g., apps)"
+#        required: false
+#        default: ""
+#      commit_mode:
+#        description: "Commit strategy: direct (to current branch) or pr (create a PR)"
+#        required: true
+#        default: "pr"
+
+  # Optional: auto-run when OpenShift input files change
+  push:
+    branches: 
+      - main
+    paths:
+      - 'openshift/**'
+      - 'tools/**'
+      - '.github/workflows/ocp_to_aks.yml'
+  workflow_dispatch: 
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+    env:
+      SRC_DIR: openshift
+      OUT_DIR: deploy/base
+      DEFAULT_DOMAIN: apps.example.com
+      INGRESS_CLASS: nginx
+      TLS_SECRET: myapp-tls
+      IMAGE_REGISTRY: dxctraining.azurecr.io/im-sample-app:v1
+      REPO_PREFIX: apps
+      COMMIT_MODE: direct
+
+    steps:
+      - name: Checkout repository (with write token)
+        uses: actions/checkout@v4
+        with:
+          # Persist token so we can push
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Ensure output directory exists
+        run: mkdir -p "$OUT_DIR"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Run transformer OCP to AKS
+        run: |
+          python tools/ocp2aks.py \
+            --src "$SRC_DIR" \
+            --out "$OUT_DIR" \
+            --default-domain "$DEFAULT_DOMAIN" \
+            --ingress-class "$INGRESS_CLASS" \
+            --tls-secret "$TLS_SECRET" \
+            --image-registry "$IMAGE_REGISTRY" \
+            --repo-prefix "$REPO_PREFIX"
+
+      - name: List transformed output
+        run: |
+          echo "Converted files written to: $OUT_DIR"
+          ls -R "$OUT_DIR" || true
+          test -f "$OUT_DIR/transform-report.md" && sed -n '1,120p' "$OUT_DIR/transform-report.md" || true
+
+      - name: Install kubectl (client-side validation)
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+       # Lightweight structural check (no cluster)
+      #- name: Validate manifests (dry-run)
+       # run: kubectl apply --dry-run=client --validate=false -f "$OUT_DIR"
+
+        # Strict schema validation (no cluster)
+      - name: Kubeconform validation
+        run: |
+            curl -sSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+            tar -xzf kubeconform.tar.gz kubeconform
+            ./kubeconform \
+            -kubernetes-version 1.28.10 \
+            -strict \
+            -summary \
+            -ignore-missing-schemas \
+            "$OUT_DIR"
+
+
+      # ──────────────────────────────────────────────────────────────
+      # Commit & push changes back to the repo
+      # ──────────────────────────────────────────────────────────────
+
+      - name: Configure Git author
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect changes in output folder
+        id: diff
+        shell: bash
+        run: |
+          git add "$OUT_DIR"
+          if git diff --staged --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes detected under $OUT_DIR."
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Changes detected under $OUT_DIR."
+          fi
+
+      # Option A: Direct commit to current branch (for non-protected branches)
+      - name: Commit to current branch
+        if: steps.diff.outputs.changed == 'true' && env.COMMIT_MODE == 'direct'
+        run: |
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          echo "Committing to branch: $BRANCH"
+          git commit -m "ocp2aks update AKS manifests in ${OUT_DIR}"
+          git push origin "$BRANCH"
+
+      - name: Upload artifacts (for review/CI)
+        uses: actions/upload-artifact@v3
+        with:
+          name: ocp-to-aks-manifests
+          path: ${{ env.OUT_DIR }}
+          if-no-files-found: error

@@ -1,0 +1,68 @@
+name: Promote to PROD (semver PR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to promote (e.g. 1.2.0). Leave empty to use current DEV version on main."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  IMAGE_REPO_PREFIX: apps
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # read DEV tag from main
+            VER=$(yq -r '.image.tag' envs/dev/values.yaml)
+            echo "Using DEV version on main: $VER"
+            echo "version=$VER" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PROD values & open PR
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          FILE="envs/prod/values.yaml"
+          IMG="${{ secrets.ACR_NAME }}.azurecr.io/${IMAGE_REPO_PREFIX}/${GITHUB_REPOSITORY##*/}"
+
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMG}|" "$FILE"
+          sed -i "s|^\(\s*tag:\s*\).*|\1${VERSION}|" "$FILE"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BR="promote-prod-${VERSION}"
+          git checkout -b "$BR"
+          git add "$FILE"
+          git commit -m "chore(prod): promote myapp to ${IMG}:${VERSION}"
+          git push -u origin "$BR"
+
+      - name: PR → main (Prod)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          title: "Promote myapp to version ${{ steps.ver.outputs.version }}"
+          body: |
+            Promote **imh-apps** to **version ${{ steps.ver.outputs.version }}**.
+            After merge, Argo CD will auto-sync PROD to **imh-app-prod**.
+          base: main
+          branch: promote-prod-${{ steps.ver.outputs.version }}
+          delete-branch: true
+          labels: prod, automated

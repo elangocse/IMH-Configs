@@ -3,7 +3,7 @@ name: CI - Build & Bump DEV (Git Tag Semver)
 on:
   push:
     branches:
-      - "feature_*"
+      - "feature_*" 
       - "feature/**"
     paths:
       - "Dockerfile"

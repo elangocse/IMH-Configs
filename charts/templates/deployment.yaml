@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "imh-apps.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "imh-apps.name" . }}
+    helm.sh/chart: {{ include "imh-apps.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "imh-apps.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "imh-apps.name" . }}
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.containerPort }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

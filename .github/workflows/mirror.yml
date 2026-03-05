@@ -1,0 +1,117 @@
+name: Mirror Image
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      PORTUS_REPO: im-sample-app
+      TAG: v1
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      PORTUS_REGISTRY: ${{ secrets.PORTUS_REGISTRY }}
+      PORTUS_USERNAME: ${{ secrets.PORTUS_USERNAME }}
+      PORTUS_PASSWORD: ${{ secrets.PORTUS_PASSWORD }}
+
+      #PREFIX: dxctraining      
+        
+    steps:
+      - name: Say Hello
+        run: echo "Hello World!"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # - name: Configure AWS Credentials (OIDC)
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     role-to-assume: arn:aws:iam::975139218322:role/GitHubActions-ECR-Access
+      #     aws-region: us-east-1
+
+      # - name: Login to ECR
+      #   run: |
+      #     aws ecr get-login-password --region us-east-1 | \
+      #       docker login \
+      #         --username AWS \
+      #         --password-stdin \
+      #         975139218322.dkr.ecr.us-east-1.amazonaws.com
+
+
+      - name: Set up Docker Buildx (for modern Docker CLI & auth store)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Portus (on-prem)
+        run: |
+          echo "${PORTUS_PASSWORD}" | 
+          docker login "${PORTUS_REGISTRY}" -u "${PORTUS_USERNAME}" --password-stdin
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}              
+
+      - name: ACR login (no admin password required)
+        run: az acr login -n ${{ secrets.ACR_NAME }}
+
+      - name: Test Azure login
+        run: az acr list -o table
+
+      # 5) Install skopeo for direct registry copy
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y skopeo
+
+      # 6) Compute source and destination refs
+      - name: Compute refs
+        id: refs
+        shell: bash
+        run: |
+          
+            SRC="docker://${PORTUS_REGISTRY}/${PORTUS_PROJECT}/${PORTUS_REPO}:${TAG}"
+
+            if [[ -n "$ACR_REPO_PREFIX" ]]; then
+              DEST_REPO="${ACR_REPO_PREFIX}/${REPO}"
+            else
+              DEST_REPO="${REPO}"
+            fi
+            DEST="docker://${ACR_NAME}.azurecr.io/${DEST_REPO}:${TAG}"
+
+            echo "==> Copying $SRC --> $DEST"
+
+          # REPO_LAST="${ECR_REPO##*/}"
+          # if [[ -n "$PREFIX" ]]; then
+          #   DEST_REPO="${PREFIX}/${REPO_LAST}"
+          # else
+          #   DEST_REPO="${REPO_LAST}"
+          # fi
+          # DEST="docker://${ACR_NAME}.azurecr.io/${DEST_REPO}:${TAG}"
+          # echo "src=$SRC" >> $GITHUB_OUTPUT
+          # echo "dest=$DEST" >> $GITHUB_OUTPUT
+          # echo "dest_repo=${DEST_REPO}" >> $GITHUB_OUTPUT
+
+      # 7) Copy ECR -> ACR (multi-arch aware)
+      - name: Copy image Portus -> ACR
+        run: |
+          skopeo copy --all \
+            --src-tls-verify=true \
+            --dest-tls-verify=true \
+            "${{ steps.refs.outputs.src }}" \
+            "${{ steps.refs.outputs.dest }}"
+
+      # 9) Verify in ACR
+      - name: Show tags in ACR
+        run: |
+          az acr repository show-tags \
+            -n "$ACR_NAME" \
+            --repository "${{ steps.refs.outputs.dest_repo }}" \
+            -o table || true
+        
+

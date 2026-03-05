@@ -1,0 +1,10 @@
+image:
+  repository: dxctraining.azurecr.io/apps/imh-java
+  tag: 0.1.4
+
+replicaCount: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  host: imh-app-dev.example.com

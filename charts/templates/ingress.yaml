@@ -1,0 +1,30 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "imh-apps.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "imh-apps.name" . }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+spec:
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path | default "/" | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "imh-apps.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    - hosts: [ {{ .Values.ingress.host | quote }} ]
+      {{- if .Values.ingress.tlsSecretName }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+      {{- else }}
+      secretName: {{ include "imh-apps.fullname" . }}-tls
+      {{- end }}
+ 

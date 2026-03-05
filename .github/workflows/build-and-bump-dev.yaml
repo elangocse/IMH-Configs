@@ -1,0 +1,138 @@
+name: CI - Build & Bump DEV (Git Tag Semver)
+
+on:
+  push:
+    branches:
+      - "feature_*"
+      - "feature/**"
+    paths:
+      - "Dockerfile"
+      - "src/**"
+      - "charts/**"
+      - "envs/dev/**"
+      - ".github/workflows/build-and-bump-dev.yaml"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which version bump? major | minor | patch"
+        required: true
+        default: "patch"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: semver-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO_PREFIX: apps
+
+jobs:
+  build-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ensure tags are available
+
+      - name: Get latest tag (safe fallback)
+        id: tag
+        shell: bash
+        run: |
+          set -e
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
+          echo "last=$LAST_TAG" >> $GITHUB_OUTPUT
+          echo "Latest (or default) tag: $LAST_TAG"
+
+      - name: Bump version
+        id: bump
+        shell: bash
+        run: |
+          LAST="${{ steps.tag.outputs.last }}"
+          CLEAN="${LAST#v}"
+          IFS='.' read -r MA MI PA <<< "$CLEAN"
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+          case "$BUMP" in
+            major) MA=$((MA+1)); MI=0; PA=0 ;;
+            minor) MI=$((MI+1)); PA=0 ;;
+            patch) PA=$((PA+1)) ;;
+            *) echo "invalid bump '$BUMP'"; exit 1 ;;
+          esac
+          NEW="$MA.$MI.$PA"
+          echo "new=$NEW" >> $GITHUB_OUTPUT
+          echo "v$NEW" > newtag.txt
+          echo "Bumped to: v$NEW"
+
+      - name: Create & Push Git tag
+        shell: bash
+        run: |
+          TAG="v${{ steps.bump.outputs.new }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Derive image ref
+        id: vars
+        shell: bash
+        run: |
+          REPO_NAME="imh-java"
+          IMAGE_REPO="${IMAGE_REPO_PREFIX}/${REPO_NAME}"
+          VERSION="${{ steps.bump.outputs.new }}"
+          IMAGE_FQDN="${{ secrets.ACR_NAME }}.azurecr.io"
+          IMAGE_REF="${IMAGE_FQDN}/${IMAGE_REPO}:${VERSION}"
+          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+          echo "repo=${IMAGE_REPO}"      >> $GITHUB_OUTPUT
+          echo "version=${VERSION}"      >> $GITHUB_OUTPUT
+
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: ACR login
+        run: az acr login -n ${{ secrets.ACR_NAME }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Unit tests (placeholder)
+        run: echo "Run your tests here"
+
+      - name: Build & Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.image_ref }}
+            ${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.vars.outputs.repo }}:latest
+          cache-from: type=registry,ref=${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.vars.outputs.repo }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.vars.outputs.repo }}:buildcache,mode=max
+
+      - name: Update DEV values to new version
+        shell: bash
+        run: |
+          FILE="envs/dev/values.yaml"
+          IMG="${{ secrets.ACR_NAME }}.azurecr.io/${{ steps.vars.outputs.repo }}"
+          VER="${{ steps.bump.outputs.new }}"
+          sed -i "s|^\(\s*repository:\s*\).*|\1${IMG}|" "$FILE"
+          sed -i "s|^\(\s*tag:\s*\).*|\1${VER}|" "$FILE"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+          git commit -m "chore(dev): bump image to ${IMG}:${VER}" || true
+          git push origin "${GITHUB_REF_NAME}"
+
+      - name: Open PR → main (Dev)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ github.token }}
+          title: "feat: Merge ${{ github.ref_name }} (version v${{ steps.bump.outputs.new }})"
+          body: |
+            Version bumped: **v${{ steps.bump.outputs.new }}**
+            Image: `${{ steps.vars.outputs.image_ref }}`
+            DEV values updated in this branch.
+
+            After approval & merge, Argo CD will auto-sync DEV to **imh-app-dev**.
+          base: main
+          branch: ${{ github.ref_name }}
+          labels: dev, automated

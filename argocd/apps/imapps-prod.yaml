@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: imh-apps-prod
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: imh-app-prod
+  source:
+    repoURL: https://github.com/elangocse/IMH-Configs.git
+    targetRevision: main
+    path: charts/myapp
+    helm:
+      valueFiles:
+        - ../../envs/prod/values.yaml
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
